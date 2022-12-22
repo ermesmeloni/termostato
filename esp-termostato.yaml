@@ -1,0 +1,387 @@
+esphome:
+  name: esp-termostato
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+  baud_rate: 0
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "wIK3pJfu94INL//kqm0gt10JOIqaRaUZ402/kJyvai0="
+
+ota:
+  password: "b0042aa6e0f73ca4d65c602323f18e49"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  manual_ip:
+    static_ip: 192.168.1.104
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
+    dns1: 192.168.1.1
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Esp-Termostato Fallback Hotspot"
+    password: !secret wifi_password
+
+captive_portal:
+
+http_request:
+
+time:
+  - platform: homeassistant
+
+uart:
+  rx_pin: GPIO03
+  tx_pin: GPIO01
+  baud_rate: 9600
+  #baud_rate: 115200
+  id: uart_nextion
+
+
+##########################################################
+switch:
+  - platform: gpio
+    name: "rele_riscaldamento"
+    id: "rele_riscaldamento"
+    pin: GPIO14
+
+  - platform: restart
+    name: Restart Termostato Nextion
+
+  - platform: template
+    name: "Reload TFT"
+    lambda: |-
+      if (id(update_nextion).state) {
+        return true;
+      } else {
+        return false;
+      }
+    turn_on_action:
+      - lambda: |-
+          ESP_LOGD("DEBUG", "Upload TFT");
+          id(nextion_id)->upload_tft();
+
+
+##########################################################
+sun:
+  latitude: !secret latitude
+  longitude: !secret longitude
+  on_sunrise:
+    - then:
+        lambda: |-
+          id(nextion_id).set_backlight_brightness(1.0);
+          id(nextion_id).send_command_printf("page0.sun.pic=%d", 3);
+          ESP_LOGD("DEBUG", "Alba attivo luminosita massima");
+  on_sunset:
+    - then:
+        lambda: |-
+          id(nextion_id).set_backlight_brightness(0.5);
+          id(nextion_id).send_command_printf("page0.sun.pic=%d", 4);
+          ESP_LOGD("DEBUG", "Tramonto attivo luminosita 50 perc.");
+
+
+##########################################################
+interval:
+  - interval: 60s
+    then:
+     - if:
+        condition:
+          api.connected:
+        then:
+          lambda: |-
+            id(temperatura_clima).publish_state(id(temperatura_media_casa).state);
+            id(nextion_id).set_component_text("page0.online", "Online");
+            id(nextion_id).set_component_font_color("page0.online", arancio);
+        else:
+          lambda: |-
+            id(temperatura_clima).publish_state(id(temperatura_termostato_temperature).state);
+            id(nextion_id).set_component_text("page0.online", "Offline");
+            id(nextion_id).set_component_font_color("page0.online", rosso);
+
+##########################################################
+climate:
+  - platform: thermostat
+    id: termostato_casa
+    name: "Termostato Casa"
+    sensor: temperatura_clima
+    min_heating_off_time: 2s
+    min_heating_run_time: 2s
+    min_idle_time: 2s
+    startup_delay: true
+    heat_deadband: 0.3
+    heat_overrun: 0.5
+    visual:
+      min_temperature: 15 °C
+      max_temperature: 30 °C
+    default_preset: Home
+    preset:
+      - name: Home
+        default_target_temperature_low: 24 °C
+    heat_action:
+      - logger.log: "riscaldamento ON"
+      - switch.turn_on: rele_riscaldamento
+    idle_action:
+      - logger.log: "riscaldamento OFF"
+      - switch.turn_off: rele_riscaldamento
+    on_state:
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.temperatura", "%.1f°", id(termostato_casa).current_temperature);
+        id(nextion_id).set_component_text_printf("page0.setpoint", "%.1f°", id(termostato_casa).target_temperature);
+        ESP_LOGD("DEBUG", "Clima mode: %d", id(termostato_casa).mode);
+        ESP_LOGD("DEBUG", "Clima action: %d", id(termostato_casa).action);  
+        if (id(termostato_casa).mode == 0) {
+          id(nextion_id).set_component_text("page0.clima", "Off");
+          id(nextion_id).set_component_font_color("page0.clima", grigio);
+          id(nextion_id).send_command_printf("page0.pic=%d", 0);
+        }
+        if (id(termostato_casa).mode == 3) {
+          if (id(termostato_casa).action == 3) {
+            id(nextion_id).set_component_text("page0.clima", "On - HEAT");
+            id(nextion_id).set_component_font_color("page0.clima", arancio);
+          }
+          if (id(termostato_casa).action == 0) {
+            id(nextion_id).set_component_text("page0.clima", "On - OFF");
+            id(nextion_id).set_component_font_color("page0.clima", arancio);
+          }
+          if (id(termostato_casa).action == 4) {
+            id(nextion_id).set_component_text("page0.clima", "On - IDLE");
+            id(nextion_id).set_component_font_color("page0.clima", arancio);
+          }
+          id(nextion_id).send_command_printf("page0.pic=%d", 1);
+        }
+
+##########################################################     
+display:
+  - platform: nextion
+    id: nextion_id
+    uart_id: uart_nextion
+    tft_url: 'http://192.168.1.11:8123/local/termostato.tft'
+    #update_interval: 6s
+
+##########################################################
+color:
+  - id: arancio
+    red: 100%
+    green: 51%
+    blue: 0%
+    white: 0%
+  - id: rosso
+    red: 91%
+    green: 30%
+    blue: 12%
+    white: 0%
+  - id: grigio
+    red: 54%
+    green: 54%
+    blue: 54%
+    white: 0%
+
+##########################################################
+binary_sensor:    
+    
+  - platform: homeassistant
+    entity_id: binary_sensor.update_nextion
+    id: update_nextion
+
+  #Pulsante off
+  - platform: nextion
+    nextion_id: nextion_id
+    page_id: 0
+    component_id: 1
+    component_name: page0.off
+    id: button_off
+    name: "button off"
+    on_press:
+      - climate.control:
+          id: termostato_casa
+          mode: "OFF"
+      - lambda: |-
+          id(nextion_id).send_command_printf("page0.pic=%d", 0);
+          
+  #Pulsante on
+  - platform: nextion
+    nextion_id: nextion_id
+    page_id: 0
+    component_id: 2
+    component_name: page0.on
+    id: button_on
+    name: "button on"
+    on_press:
+      - climate.control:
+          id: termostato_casa
+          mode: "HEAT"
+      - lambda: |-
+          id(nextion_id).send_command_printf("page0.pic=%d", 1);
+
+  #pulsante up
+  - platform: nextion
+    nextion_id: nextion_id
+    page_id: 0
+    component_id: 8
+    component_name: page0.up
+    id: button_up
+    name: "button up"
+    on_press:
+      - climate.control:
+          id: termostato_casa
+          target_temperature: !lambda "return id(termostato_casa).target_temperature + 0.5;"
+  
+  #pulsante down
+  - platform: nextion
+    nextion_id: nextion_id
+    page_id: 0
+    component_id: 9
+    component_name: page0.down
+    id: button_down
+    name: "button down"
+    on_press:
+      - climate.control:
+          id: termostato_casa
+          target_temperature: !lambda "return id(termostato_casa).target_temperature - 0.5;"
+
+
+##########################################################
+sensor:
+
+  #Sensore HA termostato.yaml valore medio dei termostati in casa
+  - platform: homeassistant
+    entity_id: sensor.temperatura_media_casa
+    id: temperatura_media_casa
+
+  #Sensore esp32
+  - platform: dht
+    pin: GPIO32
+    temperature:
+      name: "Temperatura Termostato Temperature"
+      id: "temperatura_termostato_temperature"
+    humidity:
+      name: "Temperatura Termostato Humidity"
+      id: "temperatura_termostato_humidity"
+    update_interval: 60s     
+
+  #Sensore associato all'entità clima, viene popolato da interval con la temperatura_media_casa se connesso a HA oppure con temperatura_termostato_temperature se offline
+  - platform: template
+    name: "temperatura_clima"
+    id: temperatura_clima
+    unit_of_measurement: "°C"
+    icon: "mdi:water-percent"
+    device_class: "temperature"
+    state_class: "measurement"
+    accuracy_decimals: 1
+    internal: false
+
+
+  - platform: homeassistant
+    entity_id: sensor.temperatura_interrato_temperature
+    id: ha_interrato_temperatura
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.tInterrato", "%.1f° - %.1f%% Int.", id(ha_interrato_temperatura).state, id(ha_interrato_umidita).state);
+
+  - platform: homeassistant
+    entity_id: sensor.temperatura_interrato_humidity
+    id: ha_interrato_umidita
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.tInterrato", "%.1f° - %.1f%% Int.", id(ha_interrato_temperatura).state, id(ha_interrato_umidita).state);
+
+  - platform: homeassistant
+    entity_id: sensor.temperatura_camera_temperature
+    id: ha_camera_temperatura
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.tCamera", "%.1f° - %.1f%% Int.", id(ha_camera_temperatura).state, id(ha_camera_umidita).state);
+
+  - platform: homeassistant
+    entity_id: sensor.temperatura_camera_humidity
+    id: ha_camera_umidita
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.tCamera", "%.1f° - %.1f%% Int.", id(ha_camera_temperatura).state, id(ha_camera_umidita).state);
+
+  - platform: homeassistant
+    entity_id: sensor.temperatura_cameretta_temperature
+    id: ha_cameretta_temperatura
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.tCameretta", "%.1f° - %.1f%% Int.", id(ha_cameretta_temperatura).state, id(ha_cameretta_umidita).state);
+
+  - platform: homeassistant
+    entity_id: sensor.temperatura_cameretta_humidity
+    id: ha_cameretta_umidita
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.tCameretta", "%.1f° - %.1f%% Int.", id(ha_cameretta_temperatura).state, id(ha_cameretta_umidita).state);
+
+  - platform: homeassistant
+    entity_id: sensor.temperatura_bagno_temperature
+    id: ha_bagno_temperatura
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.tBagno", "%.1f° - %.1f%% Int.", id(ha_bagno_temperatura).state, id(ha_bagno_umidita).state);
+
+  - platform: homeassistant
+    entity_id: sensor.temperatura_bagno_humidity
+    id: ha_bagno_umidita
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.tBagno", "%.1f° - %.1f%% Int.", id(ha_bagno_temperatura).state, id(ha_bagno_umidita).state);
+
+  - platform: homeassistant
+    entity_id: sensor.temperatura_sala_temperature
+    id: ha_sala_temperatura
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.tSala", "%.1f° - %.1f%% Int.", id(ha_sala_temperatura).state, id(ha_sala_umidita).state);
+
+  - platform: homeassistant
+    entity_id: sensor.temperatura_sala_humidity
+    id: ha_sala_umidita
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.tSala", "%.1f° - %.1f%% Int.", id(ha_sala_temperatura).state, id(ha_sala_umidita).state);
+
+  - platform: homeassistant
+    entity_id: sensor.energia_giornaliero_casa
+    id: ha_energia_giornaliero_casa
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.casa", "Cons. Tot %.2f kW/gg", id(ha_energia_giornaliero_casa).state);
+
+  - platform: homeassistant
+    entity_id: sensor.energia_giornaliero_prodotta
+    id: ha_energia_giornaliero_prodotta
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.ftv", "FTV %.2f kW/gg", id(ha_energia_giornaliero_prodotta).state);
+
+  - platform: homeassistant
+    entity_id: sensor.energia_giornaliero_pdc
+    id: ha_energia_giornaliero_pdc
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.pdcGiornaliero", "PDC %.2f kW/gg", id(ha_energia_giornaliero_pdc).state);
+
+  - platform: homeassistant
+    entity_id: sensor.energia_mensile_pdc
+    id: ha_energia_mensile_pdc
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.pdcMensile", "PDC %.2f kW/mm", id(ha_energia_mensile_pdc).state);
+
+  - platform: homeassistant
+    entity_id: counter.pdc_on_off
+    id: ha_pdc_on_off
+    on_value: 
+      lambda: |-
+        id(nextion_id).set_component_text_printf("page0.pdcOnOff", "PDC On/Off %.0f", id(ha_pdc_on_off).state);
